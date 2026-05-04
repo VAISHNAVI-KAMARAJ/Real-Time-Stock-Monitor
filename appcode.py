@@ -302,9 +302,17 @@ def check_alerts_and_notify():
             continue
         symbol = alert["symbol"]
         latest_df = fetch_intraday(symbol, period="2d", interval="5m")
+
+        latest_df = latest_df.dropna(subset=["Close"])  # ✅ FIX
+
         if latest_df.empty:
             continue
-        latest_price = float(latest_df["Close"].iloc[-1])
+
+        try:
+            latest_price = float(latest_df["Close"].iloc[-1])  # ✅ FIX
+        except:
+            continue
+
         trigger = False
         
         if alert["alert_type"] == "Price rises to target" and latest_price >= float(alert["target_price"]):
