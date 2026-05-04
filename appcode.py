@@ -17,7 +17,7 @@ try:
     SENDER_PASSWORD = st.secrets["SENDER_PASSWORD"]
     SMTP_SERVER = st.secrets.get("SMTP_SERVER", "smtp.gmail.com")
     SMTP_PORT = int(st.secrets.get("SMTP_PORT", 587))
-except Exception as e:
+except Exception:
     st.error("❌ Email configuration missing. Please set secrets in Streamlit Cloud.")
     st.stop()
 
@@ -45,7 +45,12 @@ if "last_refresh" not in st.session_state:
 def fetch_intraday(symbol: str, period="5d", interval="1m"):
     try:
         df = yf.download(tickers=symbol, period=period, interval=interval, progress=False, threads=False)
+
         if isinstance(df, pd.DataFrame) and not df.empty:
+            # ✅ FIX: Handle MultiIndex columns
+            if isinstance(df.columns, pd.MultiIndex):
+                df.columns = df.columns.get_level_values(0)
+
             df = df.dropna(how="all")
             return df
     except Exception as e:
@@ -62,26 +67,41 @@ def compute_indicators(df: pd.DataFrame):
 def plot_professional_chart(df: pd.DataFrame, symbol: str):
     df = df.copy()
     df.index = pd.to_datetime(df.index)
-    candlestick = go.Candlestick(
+
+    fig = go.Figure()
+
+    fig.add_trace(go.Candlestick(
         x=df.index,
         open=df["Open"], high=df["High"], low=df["Low"], close=df["Close"],
         name="Price"
-    )
-    sma50 = go.Scatter(x=df.index, y=df["SMA50"], mode="lines", name="SMA50 (short-term avg)", line=dict(width=1.5, dash='dash'))
-    sma200 = go.Scatter(x=df.index, y=df["SMA200"], mode="lines", name="SMA200 (long-term avg)", line=dict(width=1.5, dash='dot'))
-    volume = go.Bar(x=df.index, y=df["Volume"], name="Volume", yaxis="y2", opacity=0.4)
-    
-    layout = go.Layout(
+    ))
+
+    fig.add_trace(go.Scatter(
+        x=df.index, y=df["SMA50"],
+        mode="lines", name="SMA50",
+        line=dict(width=1.5, dash='dash')
+    ))
+
+    fig.add_trace(go.Scatter(
+        x=df.index, y=df["SMA200"],
+        mode="lines", name="SMA200",
+        line=dict(width=1.5, dash='dot')
+    ))
+
+    fig.add_trace(go.Bar(
+        x=df.index, y=df["Volume"],
+        name="Volume", yaxis="y2", opacity=0.4
+    ))
+
+    fig.update_layout(
         title=f"{symbol} — Candlestick Chart",
-        xaxis=dict(type="date", rangeslider=dict(visible=False), title=dict(text="Date", font=dict(size=14, family="Arial", color="black"))),
-        yaxis=dict(title=dict(text="Price", font=dict(size=14, family="Arial", color="black"))),
-        yaxis2=dict(title=dict(text="Volume", font=dict(size=14)), overlaying="y", side="right", showgrid=False, position=1.0),
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-        margin=dict(l=40, r=40, t=60, b=40),
+        xaxis=dict(type="date", rangeslider=dict(visible=False)),
+        yaxis=dict(title="Price"),
+        yaxis2=dict(title="Volume", overlaying="y", side="right"),
         template="plotly_white",
         height=600
     )
-    fig = go.Figure(data=[candlestick, sma50, sma200, volume], layout=layout)
+
     return fig
 
 def send_email(recipient_email, subject, body):
@@ -91,11 +111,13 @@ def send_email(recipient_email, subject, body):
         msg["To"] = recipient_email
         msg["Subject"] = subject
         msg.attach(MIMEText(body, "plain"))
+
         server = smtplib.SMTP(SMTP_SERVER, SMTP_PORT, timeout=10)
         server.starttls()
         server.login(SENDER_EMAIL, SENDER_PASSWORD)
         server.send_message(msg)
         server.quit()
+
         return True, None
     except Exception as e:
         return False, str(e)
@@ -104,153 +126,83 @@ def send_email(recipient_email, subject, body):
 # Layout
 # ---------------------------
 st.title("📊 Real-Time Stock Monitoring & Notification")
-st.write("Monitor stocks, view charts, and set instant price alerts via email.")
 
-# Sidebar controls
+# Sidebar
 st.sidebar.header("Controls")
-add_symbol = st.sidebar.text_input("Add stock symbol (e.g., AAPL, TCS)")
+add_symbol = st.sidebar.text_input("Add stock symbol")
+
 if st.sidebar.button("Add to watchlist"):
     sym = add_symbol.strip().upper()
-    if sym:
-        if sym not in st.session_state.watchlist:
-            st.session_state.watchlist.append(sym)
-            st.success(f"Added {sym} to watchlist.")
-        else:
-            st.info(f"{sym} already in watchlist.")
+    if sym and sym not in st.session_state.watchlist:
+        st.session_state.watchlist.append(sym)
 
-st.sidebar.markdown("---")
-st.sidebar.write("Current watchlist:")
-if st.session_state.watchlist:
-    for s in st.session_state.watchlist:
-        col1, col2 = st.sidebar.columns([4,1])
-        col1.write(s)
-        if col2.button("Remove", key=f"rm_{s}"):
-            st.session_state.watchlist.remove(s)
-            st.experimental_rerun()
-else:
-    st.sidebar.write("_No symbols yet._")
-
-refresh_interval = st.sidebar.slider("Auto-refresh interval (seconds)", 5, 60, 15)
-st.session_state.auto_refresh = st.sidebar.checkbox("Auto-refresh live", value=st.session_state.auto_refresh)
-start_monitor = st.sidebar.button("Start Monitoring")
-stop_monitor = st.sidebar.button("Stop Monitoring")
-
-if start_monitor:
-    st.session_state.running = True
-if stop_monitor:
-    st.session_state.running = False
-
-st.sidebar.markdown("---")
-st.sidebar.write("Export / Utilities")
-if st.sidebar.button("Download Alerts History CSV"):
-    if st.session_state.alert_history:
-        df_hist = pd.DataFrame(st.session_state.alert_history)
-        csv = df_hist.to_csv(index=False).encode('utf-8')
-        st.sidebar.download_button("Download Alerts CSV", csv, file_name="alerts_history.csv")
-    else:
-        st.sidebar.info("No alert history yet.")
-
-# ---------------------------
 # Tabs
-# ---------------------------
 tab1, tab2, tab3 = st.tabs(["Live Monitor", "Historical Analysis", "Alerts"])
 
 # ---------------------------
-# Tab 1: Live Monitor
+# Tab 1
 # ---------------------------
 with tab1:
-    st.subheader("Live Monitor")
-    
-    symbol_select = st.selectbox(
-        "Select stock from watchlist",
+    symbol = st.selectbox(
+        "Select stock",
         st.session_state.watchlist if st.session_state.watchlist else ["AAPL"]
     )
-    symbol = symbol_select.strip().upper()
 
-    # Fetch data
-    with st.spinner(f"Fetching {symbol} data..."):
-        data = fetch_intraday(symbol, period="7d", interval="5m")
-        if data.empty:
-            st.warning("No data found for symbol. Check symbol or try again.")
-        else:
-            data = compute_indicators(data)
-            latest = data.iloc[-1]
-            prev = data["Close"].iloc[-2] if len(data) >= 2 else latest["Close"]
-            price = float(latest["Close"])
-            change = price - float(prev)
-            change_pct = (change / float(prev)) * 100 if float(prev) != 0 else 0
-            
-            col1, col2 = st.columns([2,1])
-            delta_color = "normal"  # ✅ Streamlit-friendly
-            col1.metric(label=f"{symbol} Price", value=f"${price:.2f}", delta=f"{change:.2f}", delta_color=delta_color)
-            col2.write(f"Last refresh: {st.session_state.last_refresh or '—'}")
+    data = fetch_intraday(symbol, period="7d", interval="5m")
 
-            # ---------------------------
-            # Instant Alert Input
-            # ---------------------------
-            with st.expander("Set Instant Alert"):
-                alert_email = st.text_input("Enter your email for alert")
-                alert_price = st.number_input(f"Alert price for {symbol}", min_value=0.0, format="%.2f")
-                alert_type = st.radio("Alert type", ["Price rises to target", "Price falls to target"], key=f"alert_type_{symbol}")
-                
-                if st.button("Set Alert", key=f"alert_{symbol}"):
-                    if alert_email and alert_price > 0:
-                        alert_record = {
-                            "id": len(st.session_state.alerts)+1,
-                            "symbol": symbol,
-                            "target_price": alert_price,
-                            "alert_type": alert_type,
-                            "recipient_email": alert_email,
-                            "triggered": False,
-                            "created_at": datetime.utcnow().isoformat()
-                        }
-                        st.session_state.alerts.append(alert_record)
-                        st.success(f"Alert set for {symbol} at ${alert_price:.2f} ({alert_type}) to {alert_email}")
-                    else:
-                        st.warning("Enter valid email and price.")
+    if data.empty or "Close" not in data.columns:
+        st.warning("No valid data found.")
+    else:
+        data = compute_indicators(data)
 
-            # Chart
-            fig = plot_professional_chart(data, symbol)
-            st.plotly_chart(fig, use_container_width=True)
-            
-            st.info("""
-            **Chart explanation:**  
-            - Candlesticks: open/high/low/close  
-            - SMA50 (dashed line): average of last 50 intervals (short-term trend)  
-            - SMA200 (dotted line): average of last 200 intervals (long-term trend)  
-            - Volume bars (right axis): trading activity  
-            """)
+        try:
+            # ✅ FIXED SAFE PRICE ACCESS
+            latest_price = float(data["Close"].iloc[-1])
+            prev_price = float(data["Close"].iloc[-2]) if len(data) >= 2 else latest_price
+
+            change = latest_price - prev_price
+
+            st.metric(
+                label=f"{symbol} Price",
+                value=f"${latest_price:.2f}",
+                delta=f"{change:.2f}"
+            )
+
+        except Exception as e:
+            st.error(f"Error reading price data: {e}")
+
+        fig = plot_professional_chart(data, symbol)
+        st.plotly_chart(fig, use_container_width=True)
 
 # ---------------------------
-# Tab 2: Historical Analysis
+# Tab 2
 # ---------------------------
 with tab2:
-    st.subheader("Historical Analysis")
-    
-    default_symbol = "AAPL"
     hist_symbol = st.selectbox(
-        "Select stock for historical charts",
-        st.session_state.watchlist if st.session_state.watchlist else [default_symbol]
-    ).strip().upper()
-    
-    days = st.slider("Days of history", 30, 3650, 365)
-    interval = st.selectbox("Interval", ["1d", "1wk", "1mo"])
-    
-    with st.spinner("Fetching historical data..."):
-        df_hist = yf.download(tickers=hist_symbol, period=f"{days}d", interval=interval, progress=False)
-        if df_hist is None or df_hist.empty:
-            st.warning("No historical data found.")
-        else:
-            df_hist = compute_indicators(df_hist)
-            fig_hist = go.Figure()
-            fig_hist.add_trace(go.Candlestick(
-                x=df_hist.index, open=df_hist["Open"], high=df_hist["High"],
-                low=df_hist["Low"], close=df_hist["Close"], name="Price"))
-            fig_hist.add_trace(go.Scatter(x=df_hist.index, y=df_hist["SMA50"], name="SMA50 (short-term)", line=dict(dash="dash")))
-            fig_hist.add_trace(go.Scatter(x=df_hist.index, y=df_hist["SMA200"], name="SMA200 (long-term)", line=dict(dash="dot")))
-            fig_hist.update_layout(title=f"{hist_symbol} Historical ({interval})", template="plotly_white", height=700)
-            st.plotly_chart(fig_hist, use_container_width=True)
-            st.dataframe(df_hist.tail(50))
+        "Historical stock",
+        st.session_state.watchlist if st.session_state.watchlist else ["AAPL"]
+    )
+
+    df_hist = yf.download(hist_symbol, period="1y")
+
+    if isinstance(df_hist.columns, pd.MultiIndex):
+        df_hist.columns = df_hist.columns.get_level_values(0)
+
+    if df_hist.empty:
+        st.warning("No data")
+    else:
+        df_hist = compute_indicators(df_hist)
+
+        fig = go.Figure()
+        fig.add_trace(go.Candlestick(
+            x=df_hist.index,
+            open=df_hist["Open"],
+            high=df_hist["High"],
+            low=df_hist["Low"],
+            close=df_hist["Close"]
+        ))
+
+        st.plotly_chart(fig)
 
 # ---------------------------
 # Tab 3: Alerts
