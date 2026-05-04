@@ -169,6 +169,10 @@ with tab1:
 
     with st.spinner(f"Fetching {symbol} data..."):
         data = fetch_intraday(symbol, period="7d", interval="5m")
+
+# Fallback if intraday data not available (market closed)
+if data.empty:
+    data = yf.download(tickers=symbol, period="30d", interval="1d", progress=False)
         if data.empty:
             st.warning("No data found for symbol. Check symbol or try again.")
         else:
