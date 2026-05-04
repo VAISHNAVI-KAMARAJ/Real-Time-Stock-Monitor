@@ -46,7 +46,7 @@ def fetch_intraday(symbol: str, period="5d", interval="1m"):
     try:
         df = yf.download(tickers=symbol, period=period, interval=interval, progress=False, threads=False)
         if isinstance(df, pd.DataFrame) and not df.empty:
-            df = df.dropna(how="all")
+            df = df.dropna(subset=["Close"])  # ✅ FIXED
             return df
     except Exception as e:
         st.error(f"Error fetching {symbol}: {e}")
@@ -167,23 +167,35 @@ with tab1:
     )
     symbol = symbol_select.strip().upper()
 
-    # Fetch data
     with st.spinner(f"Fetching {symbol} data..."):
         data = fetch_intraday(symbol, period="7d", interval="5m")
         if data.empty:
             st.warning("No data found for symbol. Check symbol or try again.")
         else:
             data = compute_indicators(data)
-            latest = data.iloc[-1]
-            prev = data["Close"].iloc[-2] if len(data) >= 2 else latest["Close"]
-            price = float(latest["Close"])
-            change = price - float(prev)
-            change_pct = (change / float(prev)) * 100 if float(prev) != 0 else 0
+
+            if data.empty:
+                st.warning("No valid price data available.")
+            else:
+                latest = data.iloc[-1]
+                prev = data["Close"].iloc[-2] if len(data) >= 2 else latest["Close"]
+
+                try:
+                    price = float(latest["Close"])   # ✅ FIXED
+                    prev_val = float(prev)
+                except:
+                    st.error("Invalid price data.")
+                    st.stop()
+
+                change = price - prev_val
+                change_pct = (change / prev_val) * 100 if prev_val != 0 else 0
             
-            col1, col2 = st.columns([2,1])
-            delta_color = "normal"  # ✅ Streamlit-friendly
-            col1.metric(label=f"{symbol} Price", value=f"${price:.2f}", delta=f"{change:.2f}", delta_color=delta_color)
-            col2.write(f"Last refresh: {st.session_state.last_refresh or '—'}")
+                col1, col2 = st.columns([2,1])
+                delta_color = "normal"
+                col1.metric(label=f"{symbol} Price", value=f"${price:.2f}", delta=f"{change:.2f}", delta_color=delta_color)
+                col2.write(f"Last refresh: {st.session_state.last_refresh or '—'}")
+
+            # (rest unchanged)
 
             # ---------------------------
             # Instant Alert Input
