@@ -293,6 +293,14 @@ def check_alerts_and_notify():
         latest_df = fetch_intraday(symbol, period="2d", interval="5m")
         if latest_df.empty:
             continue
+        latest_df = fetch_intraday(symbol, period="2d", interval="5m")
+        if latest_df.empty:
+            continue
+
+# FIX: handle MultiIndex columns
+        if isinstance(latest_df.columns, pd.MultiIndex):
+            latest_df.columns = latest_df.columns.get_level_values(0)
+
         latest_price = float(latest_df["Close"].iloc[-1])
         trigger = False
         
